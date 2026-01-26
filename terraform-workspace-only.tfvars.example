@@ -1,0 +1,160 @@
+# ========================================
+# Example Configuration - Workspace-Only Mode
+# Multiple Workspaces Support
+# ========================================
+
+deployment_mode = "workspace_only"
+
+# ========================================
+# GCP Configuration
+# ========================================
+
+google_project = "your-gcp-project-id"
+google_region  = "us-central1"
+
+# ========================================
+# Databricks Configuration
+# ========================================
+
+databricks_account_id = "your-databricks-account-id"
+
+# Optional: Set if not using environment variables
+# databricks_client_id     = "your-client-id"
+# databricks_client_secret = "your-client-secret"
+
+# ========================================
+# Workspaces Configuration
+# Each workspace can use different existing VPC/subnets
+# ========================================
+
+workspaces = {
+  "workspace1" = {
+    workspace_name                       = "corp-dev-workspace"
+    project_id                           = "dev-gcp-project"
+    region                               = "us-central1"
+    vpc_name                             = "existing-vpc-1"
+    subnet_name                          = "existing-subnet-1"
+    subnet_region                        = "us-central1"
+    workspace_service_account_email      = "ws-sa-1@dev-gcp-project.iam.gserviceaccount.com"
+    cluster_service_account_email        = "cluster-sa-1@dev-gcp-project.iam.gserviceaccount.com"
+    enable_secure_cluster_connectivity   = true
+    
+    # Workspace Admins
+    workspace_admins = [
+      {
+        principal_name = "admin@company.com"  # User email
+        type           = "user"
+      }
+    ]
+    
+    # Workspace Users
+    workspace_users = [
+      {
+        principal_name = "Data Engineering"  # Group display name
+        type           = "group"
+      }
+    ]
+  }
+
+  "workspace2" = {
+    workspace_name                       = "corp-prod-workspace"
+    project_id                           = "prod-gcp-project"  # Different project!
+    region                               = "us-west1"
+    vpc_name                             = "existing-vpc-2"    # Different VPC!
+    subnet_name                          = "existing-subnet-2" # Different subnet!
+    subnet_region                        = "us-west1"
+    workspace_service_account_email      = "ws-sa-2@prod-gcp-project.iam.gserviceaccount.com"
+    cluster_service_account_email        = "cluster-sa-2@prod-gcp-project.iam.gserviceaccount.com"
+    enable_secure_cluster_connectivity   = true
+    
+    # GCP Private Service Connect (PSC) - Backend Private Link
+    # Enable PSC for fully private workspace connectivity
+    enable_private_service_connect = true
+    private_service_connect = {
+      # Relay VPC Endpoint (REQUIRED for PSC) - name of GCP forwarding rule
+      relay_endpoint_name       = "databricks-psc-relay-endpoint"  # Name of your GCP PSC forwarding rule
+      relay_endpoint_project_id = "prod-gcp-project"  # Optional: defaults to workspace project_id
+      relay_endpoint_region     = "us-west1"  # Optional: defaults to workspace region
+      
+      # Workspace Backend VPC Endpoint (OPTIONAL for PSC) - name of GCP forwarding rule
+      workspace_endpoint_name       = "databricks-psc-workspace-endpoint"  # Name of your GCP PSC forwarding rule
+      workspace_endpoint_project_id = "prod-gcp-project"  # Optional: defaults to workspace project_id
+      workspace_endpoint_region     = "us-west1"  # Optional: defaults to workspace region
+      
+      # Private Access Settings
+      public_access_enabled = false  # Set to false for fully private workspace
+      private_access_level  = "ACCOUNT"  # ACCOUNT or ENDPOINT
+    }
+    
+    # Workspace Assignments
+    workspace_admins = [
+      {
+        principal_name = "prod-admin@company.com"
+        type           = "user"
+      }
+    ]
+  }
+
+  "workspace3" = {
+    workspace_name                       = "shared-analytics"
+    project_id                           = "shared-services-project"
+    region                               = "us-east1"
+    vpc_name                             = "shared-vpc"
+    subnet_name                          = "analytics-subnet"
+    subnet_region                        = "us-east1"
+    workspace_service_account_email      = "analytics-ws-sa@shared-services-project.iam.gserviceaccount.com"
+  }
+
+  # ========================================
+  # Example: Shared VPC Configuration
+  # ========================================
+  # Use this when the VPC is hosted in a different project (Shared VPC / XPN)
+  # See: https://docs.databricks.com/gcp/en/security/network/classic/customer-managed-vpc
+  #
+  # IMPORTANT: Before deploying, ensure these IAM bindings exist on the HOST PROJECT:
+  #   - Workspace SA needs: roles/compute.networkUser on the subnet
+  #   - Databricks managed SA (db-<workspace-id>@prod-gcp-us.iam.gserviceaccount.com) 
+  #     needs: roles/compute.networkUser on the subnet
+  #
+  "workspace4-shared-vpc" = {
+    workspace_name                       = "corp-shared-vpc-workspace"
+    project_id                           = "service-project-id"       # Workspace resources created here
+    region                               = "us-central1"
+    
+    # Shared VPC configuration
+    vpc_host_project_id                  = "shared-vpc-host-project"  # VPC lives in this project (host)
+    vpc_name                             = "org-shared-vpc"           # VPC name in host project
+    subnet_name                          = "databricks-subnet"        # Subnet in host project
+    subnet_region                        = "us-central1"
+    
+    workspace_service_account_email      = "ws-sa@service-project-id.iam.gserviceaccount.com"
+    enable_secure_cluster_connectivity   = true
+    
+    workspace_admins = [
+      {
+        principal_name = "admin@company.com"
+        type           = "user"
+      }
+    ]
+  }
+}
+
+# ========================================
+# Default Existing Infrastructure (Optional)
+# Used if not specified per-workspace
+# ========================================
+
+existing_vpc_name    = "default-vpc"
+existing_subnet_name = "default-subnet"
+
+existing_workspace_service_account_email = "default-ws-sa@project.iam.gserviceaccount.com"
+existing_cluster_service_account_email   = "default-cluster-sa@project.iam.gserviceaccount.com"
+
+# ========================================
+# Tags
+# ========================================
+
+tags = {
+  terraform = "true"
+  project   = "databricks"
+}
