@@ -1,6 +1,9 @@
 name: GCP WIF Smoke Test
 
 on:
+  push:
+    branches:
+      - "feature/cicd-oidc-setup"
   workflow_dispatch:
 
 permissions:
