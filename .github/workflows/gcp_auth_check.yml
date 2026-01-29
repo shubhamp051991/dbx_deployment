@@ -24,6 +24,15 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
+      - name: Debug gcloud inputs
+        run: |
+          set -x
+          gcloud --version
+          gcloud auth list
+          gcloud config list
+          echo "GOOGLE_CLOUD_PROJECT=$GOOGLE_CLOUD_PROJECT"
+          echo "CLOUDSDK_CORE_PROJECT=$CLOUDSDK_CORE_PROJECT"
+
       - name: Verify identity
         run: |
           gcloud auth list
