@@ -1,0 +1,229 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: "Databricks Workspace - Plan"
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+    paths:
+      - '**.tf'
+      - '**.tfvars'
+      - '.github/workflows/databricks-workspace-plan.yml'
+
+env:
+  # GCP Configuration
+  SERVICE_ACCOUNT: iac-databricks-workspace@vz-iac-core.iam.gserviceaccount.com
+  WIF_PROVIDER: projects/1005751860978/locations/global/workloadIdentityPools/databricks-workspace/providers/github-default
+  TF_STATE_BUCKET: vz-iac-core-iac-stage-state
+  TF_STATE_PREFIX: databricks-workspace
+  
+  # Terraform Configuration
+  TF_VERSION: 1.14.2
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        id: checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: gcp-auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+          access_token_lifetime: 3600s
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Set up Cloud SDK
+        id: gcp-sdk
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: 'alpha,beta'
+
+      - name: Verify GCP Authentication
+        id: verify-auth
+        run: |
+          echo "Authenticated as:"
+          gcloud auth list
+          echo "Using service account: $SERVICE_ACCOUNT"
+
+      - name: Set up Terraform
+        id: tf-setup
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: true
+
+      - name: Create backend configuration
+        id: backend-config
+        run: |
+          cat > backend-override.tf <<EOF
+          terraform {
+            backend "gcs" {
+              bucket                      = "${{ env.TF_STATE_BUCKET }}"
+              prefix                      = "${{ env.TF_STATE_PREFIX }}"
+              impersonate_service_account = "${{ env.SERVICE_ACCOUNT }}"
+            }
+          }
+          EOF
+          echo "Backend configuration created:"
+          cat backend-override.tf
+
+      - name: Terraform Format Check
+        id: tf-fmt
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      - name: Terraform Init
+        id: tf-init
+        run: terraform init -no-color
+        continue-on-error: true
+
+      - name: Terraform Validate
+        id: tf-validate
+        run: terraform validate -no-color
+        continue-on-error: true
+
+      - name: Terraform Plan
+        id: tf-plan
+        env:
+          TF_VAR_databricks_account_id: ${{ secrets.DATABRICKS_ACCOUNT_ID }}
+        run: |
+          terraform plan \
+            -input=false \
+            -no-color \
+            -lock=false \
+            -out=tfplan 2>&1 | tee plan-output.txt
+        continue-on-error: true
+
+      - name: Generate Plan Summary
+        id: plan-summary
+        if: always()
+        run: |
+          if [ -f plan-output.txt ]; then
+            # Extract summary from plan output
+            echo "PLAN_SUMMARY<<EOF" >> $GITHUB_OUTPUT
+            grep -A 100 "Terraform will perform the following actions:" plan-output.txt | head -50 >> $GITHUB_OUTPUT || echo "No changes detected" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post Plan Comment to PR
+        id: pr-comment
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        env:
+          PLAN_OUTPUT: ${{ steps.tf-plan.outputs.stdout }}
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.existsSync('plan-output.txt') 
+              ? fs.readFileSync('plan-output.txt', 'utf8')
+              : 'Plan output not available';
+            
+            // Truncate if too long (GitHub has a comment size limit)
+            const maxLength = 65000;
+            const truncatedPlan = planOutput.length > maxLength 
+              ? planOutput.substring(0, maxLength) + '\n\n... (truncated)'
+              : planOutput;
+            
+            const output = `## Terraform Plan Results
+            
+            ### Format Check \`${{ steps.tf-fmt.outcome }}\`
+            ${steps.tf-fmt.outcome === 'failure' ? '⚠️ Code formatting issues detected. Run `terraform fmt -recursive` locally.' : '✅ Code is properly formatted'}
+            
+            ### Initialization \`${{ steps.tf-init.outcome }}\`
+            ${steps.tf-init.outcome === 'failure' ? '❌ Initialization failed' : '✅ Initialization successful'}
+            
+            ### Validation \`${{ steps.tf-validate.outcome }}\`
+            ${steps.tf-validate.outcome === 'failure' ? '❌ Validation failed' : '✅ Validation successful'}
+            
+            ### Plan \`${{ steps.tf-plan.outcome }}\`
+            
+            <details><summary>Show Plan Output</summary>
+            
+            \`\`\`terraform
+            ${truncatedPlan}
+            \`\`\`
+            
+            </details>
+            
+            **Pusher:** @${{ github.actor }}
+            **Action:** \`${{ github.event_name }}\`
+            **Workflow:** \`${{ github.workflow }}\`
+            **PR:** #${{ github.event.pull_request.number }}
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+      - name: Upload Plan Artifact
+        id: upload-plan
+        if: steps.tf-plan.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: |
+            tfplan
+            plan-output.txt
+          retention-days: 5
+
+      - name: Check for Failures
+        id: check-failures
+        if: always()
+        run: |
+          if [ "${{ steps.tf-init.outcome }}" != "success" ]; then
+            echo "❌ Terraform init failed"
+            exit 1
+          fi
+          if [ "${{ steps.tf-validate.outcome }}" != "success" ]; then
+            echo "❌ Terraform validate failed"
+            exit 1
+          fi
+          if [ "${{ steps.tf-plan.outcome }}" != "success" ]; then
+            echo "❌ Terraform plan failed"
+            exit 1
+          fi
+          echo "✅ All checks passed"
+
+      - name: Cleanup
+        id: cleanup
+        if: always()
+        run: |
+          rm -f backend-override.tf
+          rm -f tfplan
+          rm -f plan-output.txt
+

@@ -1,0 +1,28 @@
+name: GCP WIF Smoke Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  auth:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "projects/83839625123/locations/global/workloadIdentityPools/shubhamp05-pool/providers/github-oidc"
+          service_account: "shubhamp05-sa-oidc-778@gcp-sandbox-field-eng.iam.gserviceaccount.com"
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Verify identity
+        run: |
+          gcloud auth list
+          gcloud config list
+          gcloud projects describe YOUR_PROJECT_ID

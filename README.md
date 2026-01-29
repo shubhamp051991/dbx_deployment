@@ -1,201 +1,123 @@
-# Databricks Workspaces Deployment for Vizio Azure → GCP Migration
+# Databricks on GCP - GitHub Actions OIDC Setup
 
-This Terraform project is intended for use in the Vizio migration to deploy all the workspaces required to support the Azure migration to GCP. This Terraform script was designed to ensure that we can deploy any number of workspaces in a single Terraform execution, allowing end users to provide the necessary settings per workspace before the code is triggered, as well as the users, groups and service principals assigned to each workspace project.
+This repository contains Terraform code to deploy Databricks workspaces on Google Cloud Platform using GitHub Actions with OIDC authentication (no service account keys required!).
 
-This Terraform code comes in two different flavors:
+## 🚀 Quick Start
 
-- **full** – creates everything from scratch
-- **workspace_only** – maps existing cloud resources to new Databricks workspaces
+### Prerequisites
+- Databricks Account ID
+- GCP Project with Workload Identity Federation configured
+- GitHub repository with appropriate permissions
 
-Based on the gathered requirements, the cloud resources will already exist, so we only need to map them accordingly to each workspace. We can supply the `project_id`, `VPC`, `subnet`, and `VPC endpoints` if private link is required.  
+### Setup Steps
 
-In this case, `workspace_only` is the mode we need to use when running this Terraform script.
+1. **Configure GitHub Secrets**
+   ```
+   GitHub Repo → Settings → Secrets → Actions
+   Add: DATABRICKS_ACCOUNT_ID = your-databricks-account-id
+   ```
 
-![Architecture Overview](images/img_arch.png)
+2. **Add IAM Binding for Your Repository**
+   ```bash
+   gcloud iam service-accounts add-iam-policy-binding \
+     iac-databricks-workspace@vz-iac-core.iam.gserviceaccount.com \
+     --role=roles/iam.workloadIdentityUser \
+     --member="principalSet://iam.googleapis.com/projects/1005751860978/locations/global/workloadIdentityPools/databricks-workspace/attribute.repository/YOUR_ORG/YOUR_REPO"
+   ```
 
-## Description
+3. **Update terraform.tfvars**
+   ```bash
+   cp terraform-workspace-only.tfvars.example terraform.tfvars
+   # Edit terraform.tfvars with your configuration
+   ```
 
-This template will deploy the following resources:
+4. **Create a Test PR**
+   ```bash
+   git checkout -b test/my-workspace
+   # Make changes to terraform.tfvars
+   git add terraform.tfvars
+   git commit -m "feat: add new workspace"
+   git push origin test/my-workspace
+   # Create PR and review plan
+   ```
 
-### Full mode
-- GCP VPC
-- GCP VPC Firewall rules
-- GCP Subnet
-- Cloud NAT + Cloud Router
-- Custom Databricks Service Accounts with required [GCP permissions](https://docs.databricks.com/gcp/en/admin/cloud-configurations/gcp/permissions)
-- All resources from **Workspace-only** mode (listed below)
+## 📚 Documentation
 
-### Workspace-only mode
-- Databricks workspaces
-- Assignment of users, groups, and service principals per workspace
-- Optional implementation of Backend and Frontend Private Service Connect endpoints (PrivateLink)
+- **[README-CICD.md](./README-CICD.md)** - Complete CI/CD setup guide
+- **[provider.tf](./provider.tf)** - Terraform provider configuration with OIDC
+- **[main.tf](./main.tf)** - Main Terraform configuration
 
-## Instructions
+## 🏗️ Architecture
 
-### 1. Prerequisites
+- **Deployment Mode:** `workspace_only` (uses existing GCP infrastructure)
+- **Authentication:** OIDC Workload Identity Federation
+- **CI/CD:** GitHub Actions
+- **State:** GCS bucket (`vz-iac-core-iac-stage-state`)
 
-Before running the Terraform project, ensure you have the following installed and configured:
+## 🔐 Security
 
-- [Terraform](https://www.terraform.io/downloads.html) ≥ v1.0
+- ✅ No service account keys stored
+- ✅ Short-lived OIDC tokens (1 hour)
+- ✅ Repository-specific IAM bindings
+- ✅ Terraform state encryption at rest
 
-### 2. Provider Authentication
+## 🔄 Workflows
 
-#### GCP Provider Configuration
+### Plan Workflow (PR)
+Triggers on pull request to `main`:
+- Authenticates via OIDC
+- Runs `terraform plan`
+- Posts plan to PR comments
 
-Authenticate using one of the following methods:
+### Apply Workflow (Merge)
+Triggers on PR merge to `main`:
+- Authenticates via OIDC
+- Runs `terraform apply`
+- Deploys Databricks workspaces
 
-a. **Application Default Credentials (ADC)**  run:
-```bash
-gcloud auth application-default login
-```
+## 📝 Configuration
 
-b. **Service Account Key** – set the `GOOGLE_CREDENTIALS` environment variable.
+### Workspace Configuration Example
 
-c. **Explicit Credentials** – provide `credentials_file` or `access_token`.
-
-Ensure the principal running the Terraform code has the required [GCP Workspace Creator permissions](https://docs.databricks.com/gcp/en/admin/cloud-configurations/gcp/permissions).
-
----
-
-### Databricks Provider Configuration for Account-Level Operations
-
-This provider is used to create and manage the Databricks workspace.
-
-Authenticate using one of the following methods:
-
-a. **OAuth M2M (Machine-to-Machine)** – recommended for production. Set `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET`.
-
-b. **Databricks Account Credentials** – set `DATABRICKS_ACCOUNT_ID`, `DATABRICKS_CLIENT_ID`, and `DATABRICKS_CLIENT_SECRET`.
-
-c. **GCP Service Account** for Databricks provisioning and authentication with the Databricks Account API.
-
-For simplification, we’ll use option **C**: adding a service account and manually registering it in the Accounts Console as an account admin.
-
-![img_sa](images/sa-req.png)
-
-### 3. Terraform execution
-
-#### Populate the Terraform variables with the desired configuration for each workspace
-
-This section allows you to define per-workspace settings and set the maximum number of parallel deployments. The module supports both Private Link–enabled and standard workspaces, automatically applying the appropriate logic based on your configuration.
-
-Example without private link:
-
-```
-
-"workspace1" = {
-    workspace_name                       = "dperez-dev-workspace"
-    project_id                           = "gcp-sandbox-field-eng"
-    region                               = "us-central1"
-    vpc_name                             = "databricks-infra-vpc"
-    subnet_name                          = "databricks-subnet"
-    subnet_region                        = "us-central1" 
-    workspace_service_account_email      = "databricks-workspace-sa@gcp-sandbox-field-eng.iam.gserviceaccount.com"  # REQUIRED in workspace_only mode
-    enable_secure_cluster_connectivity   = true
-    gcs_bucket_location                  = "US"
-    allow_bucket_force_destroy           = false
-    tags = {
-      environment = "development"
-      team        = "data-engineering"
-      owner       = "danilo.deoliveiraperez@databricks.com"
-    }
-
-    # Workspace Admins - Users/Groups/Service Principals with ADMIN permissions
+```hcl
+workspaces = {
+  "workspace1" = {
+    workspace_name                     = "my-databricks-workspace"
+    project_id                         = "my-gcp-project"
+    region                             = "us-central1"
+    vpc_name                           = "existing-vpc"
+    subnet_name                        = "existing-subnet"
+    subnet_region                      = "us-central1"
+    enable_secure_cluster_connectivity = true
+    
     workspace_admins = [
       {
-        principal_name = "danilo.deoliveiraperez@databricks.com"
+        principal_name = "admin@company.com"
         type           = "user"
-      },
-      {
-        principal_name = "data-engineering-team"
-        type           = "group"
       }
     ]
     
-    workspace_users = [
-      {
-        principal_name = "data-engineering-users"
-        type           = "group"
-      }
-    ]
+    workspace_users = []
   }
-
+}
 ```
 
-Example with private link:
+## 🆘 Troubleshooting
 
-```
+### Authentication Failed
+- Verify IAM binding includes your repository
+- Check WIF provider configuration
 
-"workspace3" = {
-    workspace_name                       = "dperez-secured-ws"
-    project_id                           = "gcp-sandbox-field-eng"
-    region                               = "us-central1"
-    vpc_name                             = "dperez-vivo-proj"
-    subnet_name                          = "db-subnet"
-    subnet_region                        = "us-central1"
-    workspace_service_account_email      = "databricks-workspace-sa@gcp-sandbox-field-eng.iam.gserviceaccount.com"  # REQUIRED in workspace_only mode
-    enable_secure_cluster_connectivity   = true
-    gcs_bucket_location                  = "US"
-    allow_bucket_force_destroy           = false
-    tags = {
-      environment = "production"
-      team        = "data-secured"
-      owner       = "danilo.deoliveiraperez@databricks.com"
-    }
+### State Bucket Access Denied
+- Verify service account has `storage.objectAdmin` on bucket
 
-    # GCP Private Service Connect (PSC) - Backend Private Link
-    # Only works with workspace_only deployment mode
-    enable_private_service_connect = true
-    private_service_connect = {
+### Databricks Permission Denied
+- Verify Google SA is added as Databricks account admin
 
-      # Relay VPC Endpoint (REQUIRED for PSC) - name of GCP forwarding rule
-      relay_endpoint_name       = "psc-dperez-dp-ngrok"
-      relay_endpoint_project_id = "gcp-sandbox-field-eng"
-      relay_endpoint_region     = "us-central1"
-      
-      # Workspace Backend VPC Endpoint (OPTIONAL for PSC) - name of GCP forwarding rule  
-      workspace_endpoint_name       = "dperez-psc-endpoint-all-ports"
-      workspace_endpoint_project_id = "gcp-sandbox-field-eng"
-      workspace_endpoint_region     = "us-central1"
-      
-      # Private Access Settings
-      public_access_enabled = true  # Set to false for fully private workspace ( https://docs.databricks.com/gcp/en/security/network/classic/private-access-settings#create-a-private-access-settings-object )
-      private_access_level  = "ACCOUNT"  # ACCOUNT or ENDPOINT
-    }
+## 📞 Support
 
-    # Workspace Admins - Users/Groups/Service Principals with ADMIN permissions
-    workspace_admins = [
-      {
-        principal_name = "danilo.deoliveiraperez@databricks.com"
-        type           = "user"
-      },
-      {
-        principal_name = "data-engineering-team"
-        type           = "group"
-      }
-    ]
-    
-    # Workspace Users - Users/Groups/Service Principals with USER permissions
-    workspace_users = [
-      {
-        principal_name = "data-engineering-users" 
-        type           = "group"
-      }
+See [README-CICD.md](./README-CICD.md) for detailed troubleshooting and setup instructions.
 
-    ]
-  }
+## 📄 License
 
-```
-
-#### Execute the terraform code.
-
-After completing the tfvars file, run terraform validate to ensure the configuration is syntactically correct, and then run terraform plan to review the execution plan. If everything looks good, you can safely proceed with applying the Terraform code
-
-
-```
-export GOOGLE_CREDENTIALS="./gcp-auth/gcp-sandbox-field-eng-0426cb3ab091.json"
-terraform init
-terraform validate
-terraform plan
-terraform apply
-```
+Copyright 2026 - Internal Use Only

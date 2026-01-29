@@ -10,13 +10,38 @@ terraform {
     }
   }
   required_version = ">= 1.0"
+  
+  # Backend configuration
+  # For CI/CD: backend-override.tf is created dynamically by GitHub Actions workflow
+  # For local development: uncomment and configure the backend block below
+  # 
+  # backend "gcs" {
+  #   bucket                      = "your-terraform-state-bucket"
+  #   prefix                      = "databricks-workspaces"
+  #   impersonate_service_account = "your-service-account@project.iam.gserviceaccount.com"
+  # }
 }
 
 # GCP Provider Configuration
-# Authenticate using one of the following methods:
-# 1. Application Default Credentials (ADC) - run: gcloud auth application-default login
-# 2. Service Account Key - set GOOGLE_CREDENTIALS environment variable
-# 3. Explicitly provide credentials_file or access_token
+# 
+# Authentication Methods:
+# 
+# 1. CI/CD (GitHub Actions with OIDC/WIF):
+#    - Workflow authenticates via Workload Identity Federation
+#    - Automatically impersonates the service account
+#    - No additional configuration needed
+#
+# 2. Local Development:
+#    a) Application Default Credentials: gcloud auth application-default login
+#    b) Service Account Key: Set GOOGLE_CREDENTIALS environment variable
+#    c) Service Account Impersonation: Uncomment impersonate_service_account below
+#
+# For local development with SA impersonation, uncomment the line below:
+# provider "google" {
+#   project                     = var.google_project
+#   region                      = var.google_region
+#   impersonate_service_account = "your-service-account@project.iam.gserviceaccount.com"
+# }
 
 provider "google" {
   project = var.google_project
@@ -24,20 +49,28 @@ provider "google" {
 }
 
 # Databricks Provider Configuration for Account-Level Operations
-# This provider is used to create and manage the Databricks workspace
-# Authenticate using one of the following methods:
-# 1. OAuth M2M (Machine-to-Machine) - recommended for production
-#    Set DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET
-# 2. Databricks Account credentials
-#    Set DATABRICKS_ACCOUNT_ID, DATABRICKS_CLIENT_ID, DATABRICKS_CLIENT_SECRET
+#
+# Authentication Methods:
+#
+# 1. Google Cloud Service Account (RECOMMENDED for this setup):
+#    - The Google SA must be added as an account admin in Databricks Accounts Console
+#    - Uses Google Cloud authentication automatically (ADC or WIF in CI/CD)
+#    - No client_id/client_secret needed
+#
+# 2. OAuth M2M (Alternative):
+#    - Set DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET environment variables
+#    - Or specify client_id and client_secret explicitly
+#
+# For this deployment, we're using method #1 (Google SA as account admin)
 provider "databricks" {
   alias      = "account"
   host       = "https://accounts.gcp.databricks.com"
   account_id = var.databricks_account_id
   
-  # Authentication via OAuth M2M (Service Principal)
-  # Requires DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET environment variables
-  # Or you can specify them explicitly:
+  # Google Cloud authentication is used automatically
+  # The authenticated Google SA must have account admin permissions in Databricks
+  
+  # Alternative OAuth M2M authentication (uncomment if needed):
   # client_id     = var.databricks_client_id
   # client_secret = var.databricks_client_secret
 }
@@ -49,9 +82,7 @@ provider "databricks" {
   alias = "workspace"
   host  = var.databricks_workspace_url
   
-  # Authentication can be done via:
-  # 1. Google Cloud identity (using gcloud auth application-default login)
-  # 2. Personal Access Token (PAT)
-  # 3. OAuth M2M
+  # Authentication via Google Cloud identity
+  # Uses the same authentication as the GCP provider
 }
 

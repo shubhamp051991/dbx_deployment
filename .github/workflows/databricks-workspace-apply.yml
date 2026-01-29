@@ -1,0 +1,237 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: "Databricks Workspace - Apply"
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "apply" to confirm deployment'
+        required: true
+        default: ''
+
+env:
+  # GCP Configuration
+  SERVICE_ACCOUNT: iac-databricks-workspace@vz-iac-core.iam.gserviceaccount.com
+  WIF_PROVIDER: projects/1005751860978/locations/global/workloadIdentityPools/databricks-workspace/providers/github-default
+  TF_STATE_BUCKET: vz-iac-core-iac-stage-state
+  TF_STATE_PREFIX: databricks-workspace
+  
+  # Terraform Configuration
+  TF_VERSION: 1.14.2
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+jobs:
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    
+    # Only run if PR was merged OR manual workflow with confirmation
+    if: |
+      (github.event_name == 'pull_request' && 
+       github.event.action == 'closed' && 
+       github.event.pull_request.merged == true) ||
+      (github.event_name == 'workflow_dispatch' && 
+       github.event.inputs.confirm == 'apply')
+    
+    steps:
+      - name: Checkout repository
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.ref }}
+
+      - name: Authenticate to Google Cloud
+        id: gcp-auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+          access_token_lifetime: 3600s
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Set up Cloud SDK
+        id: gcp-sdk
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: 'alpha,beta'
+
+      - name: Verify GCP Authentication
+        id: verify-auth
+        run: |
+          echo "Authenticated as:"
+          gcloud auth list
+          echo "Using service account: $SERVICE_ACCOUNT"
+
+      - name: Set up Terraform
+        id: tf-setup
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: true
+
+      - name: Create backend configuration
+        id: backend-config
+        run: |
+          cat > backend-override.tf <<EOF
+          terraform {
+            backend "gcs" {
+              bucket                      = "${{ env.TF_STATE_BUCKET }}"
+              prefix                      = "${{ env.TF_STATE_PREFIX }}"
+              impersonate_service_account = "${{ env.SERVICE_ACCOUNT }}"
+            }
+          }
+          EOF
+          echo "Backend configuration created:"
+          cat backend-override.tf
+
+      - name: Terraform Init
+        id: tf-init
+        run: terraform init -no-color
+
+      - name: Terraform Validate
+        id: tf-validate
+        run: terraform validate -no-color
+
+      - name: Terraform Plan
+        id: tf-plan
+        env:
+          TF_VAR_databricks_account_id: ${{ secrets.DATABRICKS_ACCOUNT_ID }}
+        run: |
+          terraform plan \
+            -input=false \
+            -no-color \
+            -out=tfplan 2>&1 | tee plan-output.txt
+
+      - name: Terraform Apply
+        id: tf-apply
+        env:
+          TF_VAR_databricks_account_id: ${{ secrets.DATABRICKS_ACCOUNT_ID }}
+        run: |
+          terraform apply \
+            -input=false \
+            -auto-approve \
+            -no-color \
+            tfplan 2>&1 | tee apply-output.txt
+
+      - name: Extract Outputs
+        id: tf-outputs
+        if: steps.tf-apply.outcome == 'success'
+        run: |
+          echo "WORKSPACE_URLS<<EOF" >> $GITHUB_OUTPUT
+          terraform output -json workspace_urls >> $GITHUB_OUTPUT || echo "{}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Post Apply Summary to PR
+        id: pr-comment
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request' && github.event.pull_request.merged == true
+        with:
+          script: |
+            const fs = require('fs');
+            const applyOutput = fs.existsSync('apply-output.txt') 
+              ? fs.readFileSync('apply-output.txt', 'utf8')
+              : 'Apply output not available';
+            
+            const output = `## ✅ Terraform Apply Completed
+            
+            ### Results
+            
+            **Initialization:** \`${{ steps.tf-init.outcome }}\`
+            **Validation:** \`${{ steps.tf-validate.outcome }}\`
+            **Plan:** \`${{ steps.tf-plan.outcome }}\`
+            **Apply:** \`${{ steps.tf-apply.outcome }}\`
+            
+            <details><summary>Show Apply Output</summary>
+            
+            \`\`\`terraform
+            ${applyOutput.substring(0, 60000)}
+            \`\`\`
+            
+            </details>
+            
+            ### Workspace URLs
+            
+            Check the Actions logs for workspace URLs or run:
+            \`\`\`bash
+            terraform output workspace_urls
+            \`\`\`
+            
+            **Deployed by:** @${{ github.actor }}
+            **Commit:** ${{ github.event.pull_request.merge_commit_sha }}
+            **PR:** #${{ github.event.pull_request.number }}
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+      - name: Upload Apply Logs
+        id: upload-logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-apply-logs
+          path: |
+            apply-output.txt
+            plan-output.txt
+          retention-days: 30
+
+      - name: Check for Failures
+        id: check-failures
+        if: always()
+        run: |
+          if [ "${{ steps.tf-init.outcome }}" != "success" ]; then
+            echo "❌ Terraform init failed"
+            exit 1
+          fi
+          if [ "${{ steps.tf-validate.outcome }}" != "success" ]; then
+            echo "❌ Terraform validate failed"
+            exit 1
+          fi
+          if [ "${{ steps.tf-plan.outcome }}" != "success" ]; then
+            echo "❌ Terraform plan failed"
+            exit 1
+          fi
+          if [ "${{ steps.tf-apply.outcome }}" != "success" ]; then
+            echo "❌ Terraform apply failed"
+            exit 1
+          fi
+          echo "✅ Deployment completed successfully"
+
+      - name: Cleanup
+        id: cleanup
+        if: always()
+        run: |
+          rm -f backend-override.tf
+          rm -f tfplan
+          rm -f plan-output.txt
+          rm -f apply-output.txt
+
